@@ -1,0 +1,69 @@
+name: Fork build (GHCR)
+
+on:
+  push:
+    # `deploy` = upstream/main + your feature branches. `main` stays a pristine
+    # mirror of upstream so syncing it is always a fast-forward.
+    branches: [deploy]
+    paths-ignore:
+      - 'apps/docs/**'
+      - 'apps/landing/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'apps/docs/**'
+      - 'apps/landing/**'
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [sqlite]   # add mongo / postgres here if you deploy those
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stamp the build so the UI shows which fork build is running.
+      # ponytail: working tree only, never committed - committing version files
+      # is what makes upstream merges conflict.
+      - name: Stamp version
+        run: |
+          BASE=$(sed -nE 's/.*Version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+                 apps/server/internal/version/version.go)
+          [ -n "$BASE" ] || { echo "::error::could not parse version.go"; exit 1; }
+          V="${BASE}+jf.${GITHUB_SHA::7}"
+          sed -i -E "s/(Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${V}\2/" \
+                 apps/server/internal/version/version.go
+          printf 'export const VERSION = "%s";\n' "$V" > apps/web/src/version.ts
+          echo "stamped $V"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.bundle.${{ matrix.database }}
+          push: true
+          provenance: false
+          sbom: false
+          # PRs publish under pr-<n> so a build in review never moves :latest,
+          # while still exercising the GHCR login+push path for real.
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/peekaping-bundle-${{ matrix.database }}:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'latest' }}
+            ghcr.io/${{ github.repository_owner }}/peekaping-bundle-${{ matrix.database }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
