@@ -10,6 +10,12 @@ on:
       - 'apps/landing/**'
       - '**.md'
       - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'apps/docs/**'
+      - 'apps/landing/**'
+      - '**.md'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
@@ -54,8 +60,10 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          # PRs publish under pr-<n> so a build in review never moves :latest,
+          # while still exercising the GHCR login+push path for real.
           tags: |
-            ghcr.io/${{ github.repository_owner }}/peekaping-bundle-${{ matrix.database }}:latest
+            ghcr.io/${{ github.repository_owner }}/peekaping-bundle-${{ matrix.database }}:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'latest' }}
             ghcr.io/${{ github.repository_owner }}/peekaping-bundle-${{ matrix.database }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
