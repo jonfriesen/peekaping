@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import {
   FormField,
   FormItem,
@@ -21,6 +22,7 @@ export const schema = z.object({
   webhook_content_type: z.enum(["json", "form-data", "custom"]),
   webhook_custom_body: z.string().optional(),
   webhook_additional_headers: z.string().optional(),
+  webhook_signing_secret: z.string().optional(),
 });
 
 export type WebhookFormValues = z.infer<typeof schema>;
@@ -34,6 +36,7 @@ export const defaultValues: WebhookFormValues = {
     "Body": "{{ msg }}"
 }`,
   webhook_additional_headers: "",
+  webhook_signing_secret: "",
 };
 
 export const displayName = "Webhook";
@@ -45,12 +48,21 @@ export default function WebhookForm() {
   const [showAdditionalHeaders, setShowAdditionalHeaders] = React.useState(
     !!form.getValues("webhook_additional_headers")
   );
+  const [showSigning, setShowSigning] = React.useState(
+    !!form.getValues("webhook_signing_secret")
+  );
 
   React.useEffect(() => {
     if (!showAdditionalHeaders) {
       form.setValue("webhook_additional_headers", "");
     }
   }, [showAdditionalHeaders, form]);
+
+  React.useEffect(() => {
+    if (!showSigning) {
+      form.setValue("webhook_signing_secret", "");
+    }
+  }, [showSigning, form]);
 
   const headersPlaceholder = `Example:
 {
@@ -177,6 +189,35 @@ export default function WebhookForm() {
                   {...field}
                 />
               </FormControl>
+            )}
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
+        name="webhook_signing_secret"
+        render={({ field }) => (
+          <FormItem>
+            <div className="flex items-center gap-2 mb-2">
+              <Switch checked={showSigning} onCheckedChange={setShowSigning} />
+              <FormLabel>{t("notifications.form.webhook.signing_label")}</FormLabel>
+            </div>
+            <FormDescription>
+              {t("notifications.form.webhook.signing_description")}
+            </FormDescription>
+            {showSigning && (
+              <>
+                <FormLabel>{t("notifications.form.webhook.signing_secret_label")}</FormLabel>
+                <FormControl>
+                  <PasswordInput
+                    placeholder={t("notifications.form.webhook.signing_secret_placeholder")}
+                    required
+                    {...field}
+                  />
+                </FormControl>
+              </>
             )}
             <FormMessage />
           </FormItem>

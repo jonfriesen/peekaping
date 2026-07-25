@@ -3,6 +3,9 @@ package providers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,16 +14,38 @@ import (
 	"peekaping/internal/modules/heartbeat"
 	"peekaping/internal/modules/monitor"
 	"peekaping/internal/version"
+	"strconv"
+	"time"
 
 	liquid "github.com/osteele/liquid"
 	"go.uber.org/zap"
 )
+
+// Header names used when webhook signing is enabled.
+const (
+	webhookSignatureHeader = "X-Webhook-Signature-V2"
+	webhookTimestampHeader = "X-Webhook-Timestamp"
+)
+
+// signBody returns the lowercase hex HMAC-SHA256 of body using secret.
+func signBody(body []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// signWebhookPayload signs the V2 payload "{timestamp}.{body}" so the timestamp
+// is bound into the signature. Receivers reconstruct the same string to verify.
+func signWebhookPayload(timestamp string, body []byte, secret string) string {
+	return signBody(append([]byte(timestamp+"."), body...), secret)
+}
 
 type WebhookConfig struct {
 	WebhookURL               string `json:"webhook_url" validate:"required,url"`
 	WebhookContentType       string `json:"webhook_content_type" validate:"required,oneof=json form-data custom"`
 	WebhookCustomBody        string `json:"webhook_custom_body"`
 	WebhookAdditionalHeaders string `json:"webhook_additional_headers"`
+	WebhookSigningSecret     string `json:"webhook_signing_secret"`
 }
 
 type WebhookSender struct {
@@ -75,7 +100,7 @@ func (w *WebhookSender) Send(
 	}
 
 	// Prepare request body and headers based on content type
-	var body io.Reader
+	var bodyBytes []byte
 	headers := make(map[string]string)
 
 	switch cfg.WebhookContentType {
@@ -85,7 +110,7 @@ func (w *WebhookSender) Send(
 		if err != nil {
 			return fmt.Errorf("failed to marshal JSON body: %w", err)
 		}
-		body = bytes.NewBuffer(jsonBytes)
+		bodyBytes = jsonBytes
 		headers["Content-Type"] = "application/json"
 
 	case "form-data":
@@ -106,7 +131,7 @@ func (w *WebhookSender) Send(
 
 		writer.Close()
 
-		body = &buf
+		bodyBytes = buf.Bytes()
 		headers["Content-Type"] = writer.FormDataContentType()
 
 		// Debug logging
@@ -126,15 +151,23 @@ func (w *WebhookSender) Send(
 			return fmt.Errorf("failed to render custom body template: %w", err)
 		}
 
-		body = bytes.NewBufferString(rendered)
+		bodyBytes = []byte(rendered)
 		headers["Content-Type"] = "text/plain"
 
 	default:
 		return fmt.Errorf("unsupported content type: %s", cfg.WebhookContentType)
 	}
 
+	// Sign "{timestamp}.{body}" with HMAC-SHA256 when a signing secret is configured.
+	// Binding the timestamp into the signature lets receivers reject replayed requests.
+	if cfg.WebhookSigningSecret != "" {
+		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+		headers[webhookSignatureHeader] = signWebhookPayload(timestamp, bodyBytes, cfg.WebhookSigningSecret)
+		headers[webhookTimestampHeader] = timestamp
+	}
+
 	// Create HTTP request (always POST)
-	req, err := http.NewRequestWithContext(ctx, "POST", cfg.WebhookURL, body)
+	req, err := http.NewRequestWithContext(ctx, "POST", cfg.WebhookURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP request: %w", err)
 	}
